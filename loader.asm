@@ -29,7 +29,10 @@ main:
 	mov si, bios_patch
 	xor di, di
 	mov cx, (bios_patch_end - bios_patch)
-	rep stosb
+_patch_copy_loop:
+	lodsb
+	stosb
+	loop _patch_copy_loop
 
 	; Patch the Interrupt Vector Table
 	; TODO: keep the previous value somewhere, we're patching, not replacing things
@@ -107,7 +110,10 @@ tvram_cur_char_ptr: dw 0
 ; BIOS patch is imported here.
 ; For now, we'll just implement a stub interrupt handler
 bios_patch:
-	stc
+	push bp
+	mov bp, sp
+	or word [bp+6], 1	; Manually set carry on the saved flags
+	pop bp
 	iret
 
 bios_patch_end:
