@@ -2,17 +2,19 @@
 [org 0xF000]
 [cpu 8086]
 
+%include "config.inc"
+
 CONSOLE_LINE_LENGTH: equ 160	; 80 characters, two bytes per character
 DISK_BIOS_INTERRUPT: equ 0x1B
 DISK_BIOS_IVT_ENTRY_IP: equ DISK_BIOS_INTERRUPT << 2
 DISK_BIOS_IVT_ENTRY_CS: equ DISK_BIOS_IVT_ENTRY_IP + 2
-LOADER_SEGMENT: equ 0xA000	; The loader is held into the text VRAM.
-BIOS_PATCH_SEGMENT: equ 0x9F80	; Store the BIOS patch two kilobytes below text VRAM.
+BIOS_PATCH_SEGMENT: equ 0xA800	; Store the BIOS patch two kilobytes below text VRAM.
+
 
 main:
 	push ax
-	mov ax, LOADER_SEGMENT
-	mov ds, ax
+	push cs
+	pop ds
 
 	; Reset VRAM, white text, not secret mode, fill screen with blank spaces
 	mov ah, 0x16
@@ -29,13 +31,9 @@ main:
 	mov si, bios_patch
 	xor di, di
 	mov cx, (bios_patch_end - bios_patch)
-_patch_copy_loop:
-	lodsb
-	stosb
-	loop _patch_copy_loop
+	rep movsb
 
 	; Patch the Interrupt Vector Table
-	; TODO: keep the previous value somewhere, we're patching, not replacing things
 	mov si, patching_interrupt_msg
 	call puts
 
@@ -45,22 +43,98 @@ _patch_copy_loop:
 	xor ax, ax
 	mov ds, ax
 
+	; Copy BIOS-provided interrupt 0x1B handler in our client.
+	mov ax, [DISK_BIOS_IVT_ENTRY_IP]
+	mov [es:0x0009], ax
+
+	mov ax, [DISK_BIOS_IVT_ENTRY_CS]
+	mov [es:0x000B], ax
+
+	; Replace original vector values
+	xor ax, ax
 	mov [DISK_BIOS_IVT_ENTRY_IP], ax ; Interrupt handler offset is 0
 
 	mov ax, BIOS_PATCH_SEGMENT
 	mov [DISK_BIOS_IVT_ENTRY_CS], ax ; Interrupt handler segment
 
+	; Edit BIOS work area to simulate a proper disk boot...
+
+	; Update Boot drive ID. "Undocumented PC-9801" tells that DA/UA 0xh is not
+	; supported, use 8xh instead
+	mov [BIOS_BOOT_DISK_ID], byte DRIVE_ID
+
+	; Mark SASI Disk 80h/00h as present. This is needed to boot DOS,
+	; or else the "msdos.sys 読み込み時にエラーが発生しました" error
+	; will appear
+	or [BIOS_DISK_EQUIP_HI], byte 0x01
+
 	pop ds
 	sti	; Restore interrupts.
 
+	; Initialize serial port through the BIOS patch
+	mov ax, (0x03 << 8) + DRIVE_ID
+	int 0x1B
 
-	pop ax
-	retf 2	; temporary, we're not expected to return to BASIC.
+	; Load the two first sectors of the disk to the conventional boot sector offset
+	mov ax, BOOT_SECTOR_SEGMENT
+	mov es, ax
+	xor bp, bp	; Data is stored in ES:BP
+
+	mov bx, 512	; Load two sectors
+	xor cx, cx	; Reset sector index
+	xor dx, dx	; Reset both sector and head indexes
+
+	mov ax, (0x06 << 8) + (DRIVE_ID & 0x7F)
+	int 0x1B
+
+	jc _boot_sector_loading_failed
+
+	mov si, jumping_to_boot_sector_msg
+	call puts
+
+	; The boot sector was loaded without issues, we can now run it.
+	; Prepare final registers values before jumping to the bootloader code
+	mov ax, BOOT_SECTOR_SEGMENT
+	mov es, ax	; Make ES point to the boot sector segment
+
+	mov ax, 0x0020
+	mov ss, ax	; Change stack segment
+
+	xor ax, ax	; Reset general purpose registers
+	;mov bx, ax
+	mov cx, ax
+	mov dx, ax
+	mov ds, ax	; DS should point to segment 0
+	mov sp, 0xFFFE	; Reset stack position
+
+	mov bx, DRIVE_SECTOR_LENGTH	; We have 256 bytes sectors on this disk
+	mov al, DRIVE_ID	; AL holds the current drive ID
+
+	; Call to the bootloader, so that we have a stack structure
+	call BOOT_SECTOR_SEGMENT:0x0000
+
+	; We somehow returned from the bootloader. Things aren't good.
+	push cs
+	pop ds	; Restore DS...
+
+	mov si, returned_from_bootloader_msg	; display an error message...
+	call puts
+
+	cli	; And stop the machine.
+	hlt
+	jmp $
+
+_boot_sector_loading_failed:
+	mov si, boot_sector_loading_failed_msg
+	call puts
+	cli
+	jmp $	; This is the point of no return, the machine is considered crashed.
 
 puts:
 	; Writes a static message on-screen. Only supports US-ASCII strings.
 	; DS:SI -> source address of a C string.
 	push ax
+	push dx
 	push es
 
 	; Set ES to the text VRAM segment
@@ -94,7 +168,17 @@ _puts_lf:
 
 _puts_end:
 	mov [tvram_cur_char_ptr], di
+
+	; Update cursor position
+
+	mov ah, 0x13
+	mov dx, di
+	inc dx
+	int 0x18
+
+
 	pop es
+	pop dx
 	pop ax
 	ret
 
@@ -102,18 +186,15 @@ _puts_end:
 %defstr _greeting_msg PC9801 Serial HDD emulator (GIT_COMMIT_REF)
 greeting_msg: db _greeting_msg, 13, 0
 patching_interrupt_msg: db "Patching interrupt vector...", 13, 0
+jumping_to_boot_sector_msg: db "Now running boot sector!", 13, 0
+boot_sector_loading_failed_msg: db "Failed to load boot sector, aborting.", 13, 0
+returned_from_bootloader_msg: db "Returned from bootloader, aborting.", 0
 
 ; Global variables
 tvram_cur_line_start_ptr: dw 0
 tvram_cur_char_ptr: dw 0
 
 ; BIOS patch is imported here.
-; For now, we'll just implement a stub interrupt handler
-bios_patch:
-	push bp
-	mov bp, sp
-	or word [bp+6], 1	; Manually set carry on the saved flags
-	pop bp
-	iret
+bios_patch: incbin "client.bin"
 
 bios_patch_end:

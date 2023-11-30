@@ -10,9 +10,11 @@ all: loader.bas
 clean:
 	$(RM) -fv *.bin *.lst *.bas
 
-%.bas: %.bin
+loader.bas: loader.bin
 	$(BASIC_WRAP) $< $@
 
-%.bin: %.asm
+loader.bin: loader.asm client.bin
 	$(NASM) -D GIT_COMMIT_REF=$(GIT_COMMIT_REF) -f bin -o $@ $<
 
+client.bin: client.asm
+	$(NASM) -f bin -o $@ -l client.lst $<

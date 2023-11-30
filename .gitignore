@@ -1,3 +1,5 @@
 *.lst
 *.bin
 *.bas
+*.hd[di]
+venv
