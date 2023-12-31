@@ -5,10 +5,6 @@
 %include "config.inc"
 
 CONSOLE_LINE_LENGTH: equ 160	; 80 characters, two bytes per character
-DISK_BIOS_INTERRUPT: equ 0x1B
-DISK_BIOS_IVT_ENTRY_IP: equ DISK_BIOS_INTERRUPT << 2
-DISK_BIOS_IVT_ENTRY_CS: equ DISK_BIOS_IVT_ENTRY_IP + 2
-BIOS_PATCH_SEGMENT: equ 0xA800	; Store the BIOS patch two kilobytes below text VRAM.
 
 
 main:

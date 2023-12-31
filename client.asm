@@ -62,10 +62,13 @@ client_main:
 
 	push bp
 	push cx
+	mov bp, command_buffer
+
 	mov [cs:bp], byte 0x03
 	mov [cs:bp+1], word ax
 	mov cx, 3
 	call uart_send_packet
+
 	pop cx
 	pop bp
 
@@ -320,6 +323,5 @@ _ws_loop:
 	pop cx
 	ret
 
-
-[section .bss vstart=1024]
+[section .bss vstart=512]
 command_buffer: resb 64
