@@ -8,7 +8,7 @@
 BIOS_STATUS_CODE_EQUIPMENT_CHECK: equ 0x40
 BIOS_STATUS_CODE_NOT_WRITABLE: equ 0x70
 
-EMULATED_DRIVE_CYLINDER_COUNT: equ 153
+EMULATED_DRIVE_CYLINDER_COUNT: equ 320
 EMULATED_DRIVE_SECTOR_COUNT: equ 33
 EMULATED_DRIVE_HEAD_COUNT: equ 4
 
@@ -51,6 +51,9 @@ client_main:
 	; bit is set, we have to return the drive geometry.
 	cmp ah, 0x84
 	jz extended_sense_handler
+
+	cmp ah, 0x05
+	jz write_handler
 
 	cmp ah, 0x03
 	jz initialize_handler
@@ -230,6 +233,9 @@ read_handler.failure:
 	mov ah, BIOS_STATUS_CODE_EQUIPMENT_CHECK
 	jmp error_return
 
+write_handler:
+	mov ah, BIOS_STATUS_CODE_NOT_WRITABLE
+	jmp error_return
 
 ; UART-related functions
 
@@ -244,10 +250,10 @@ uart_init:
 	out UART_CMD_PORT, al
 	call wait_some
 
-	mov al, 13	; 8MHz bus on V mode, clock prescaler is 16: this will give us 9600bps
+	mov al, 8	; 8 clocks on 10MHz bus, clock prescaler is 16: this will give us 19200bps
 	out 0x75, al
 	xor al, al
-	out 0x75, al	; Ghetto reset i8253 channel 2, which drivers the baud generator
+	out 0x75, al	; Ghetto reset i8253 channel 2, which drives the baud generator
 	call wait_some
 
 	; Do an internal reset
