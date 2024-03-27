@@ -8,12 +8,11 @@
 BIOS_STATUS_CODE_EQUIPMENT_CHECK: equ 0x40
 BIOS_STATUS_CODE_NOT_WRITABLE: equ 0x70
 
-EMULATED_DRIVE_CYLINDER_COUNT: equ 320
-EMULATED_DRIVE_SECTOR_COUNT: equ 33
-EMULATED_DRIVE_HEAD_COUNT: equ 4
-
 EMULATOR_READ_COMMAND_OPCODE: equ 0x01
 EMULATOR_READ_RESPONSE_OPCODE: equ 0x81
+
+EMULATOR_GEOMETRY_COMMAND_OPCODE: equ 0x02
+EMULATOR_GEOMETRY_RESPONSE_OPCODE: equ 0x82
 
 UART_DATA_PORT: equ 0x30
 UART_CMD_PORT: equ 0x32
@@ -109,8 +108,54 @@ initialize_handler:
 
 	call wait_some
 
+	; We use the INITIALIZE handler to set up the emulated disk geometry.
+	; Send a GEOMETRY command to the remote machine
+	push bp
+	push ax
+	push cx
+
+	mov bp, command_buffer
+
+	mov [cs:bp], 	byte EMULATOR_GEOMETRY_COMMAND_OPCODE
+	mov [cs:bp+1],	byte 0
+
+	mov cx, 2
+	call uart_send_packet
+
+	; Handle the response
+	call uart_read_byte
+	cmp al, EMULATOR_GEOMETRY_RESPONSE_OPCODE
+	jnz initialize_handler.failure
+
+	; ... and that the status byte is cleared.
+	call uart_read_byte
+	cmp al, 0
+	jnz initialize_handler.failure
+
+	; Read the next 8 bytes, which contain our geometry specs
+	mov cx, 8
+	mov bp, emulated_drive_lba_sector_count
+
+initialize_handler.geometry_read_loop:
+	call uart_read_byte
+	mov [cs:bp], al
+	inc bp
+	loop initialize_handler.geometry_read_loop
+
+	pop cx
+	pop ax
+	pop bp
+
 	xor ah, ah
 	jmp success_return
+
+initialize_handler.failure:
+	pop cx
+	pop ax
+	pop bp
+
+	mov ah, BIOS_STATUS_CODE_EQUIPMENT_CHECK
+	jmp error_return
 
 ; AH=0x04/0x84 handler - SENSE
 ; Returns what do we know about the fixed disk (size and geometry)
@@ -124,10 +169,11 @@ initialize_handler:
 extended_sense_handler:
 	; If set, we come from the 0x84 Sense+Geometry code: update BX/CX/DX to the
 	; expected values
+
 	mov bx, 256
-	mov cx, EMULATED_DRIVE_CYLINDER_COUNT
-	mov dh, EMULATED_DRIVE_HEAD_COUNT
-	mov dl, EMULATED_DRIVE_SECTOR_COUNT
+	mov cx, [cs:emulated_drive_cylinder_count]
+	mov dh, [cs:emulated_drive_head_count]
+	mov dl, [cs:emulated_drive_sector_count]
 
 	push ax
 	push ds
@@ -135,24 +181,19 @@ extended_sense_handler:
 	xor ax, ax
 	mov ds, ax
 
-	mov [0x586], word 0x0000
-	mov [0x588], word 0xe44e	; store in big endian...
+	; Get the LBA sector count, and swap values to be in big endian
+	mov ax, [cs:emulated_drive_lba_sector_count]
+	xchg ah, al
+	mov [0x588], ax
+
+	mov ax, [cs:emulated_drive_lba_sector_count+2]
+	xchg ah, al
+	mov [0x586], ax
 
 	pop ds
 	pop ax
 
 sense_handler:
-	push bp	; Sense debug section
-	push cx
-	mov bp, command_buffer
-	mov [cs:bp], byte 0x02
-	mov [cs:bp+1], word ax
-	mov cx, 3
-	call uart_send_packet
-	pop cx
-	pop bp
-
-
 	mov ah, 0x00	; bit 4 is set to indicate we're in RO mode
 	jmp success_return
 
@@ -241,6 +282,7 @@ write_handler:
 
 ; uart_init - sets up the built-in Intel 8251 UART
 uart_init:
+	push ax
 	; Perform a full reset of the UART, as explained in the datasheet
 
 	out UART_CMD_PORT, al	; Write three times 0x00 to the UART command port
@@ -271,6 +313,7 @@ uart_init:
 	out UART_CMD_PORT, al
 	call wait_some
 
+	pop ax
 	ret
 
 ; uart_send_packet - send a "packet" of bytes through the UART. Packet data must be
@@ -330,4 +373,8 @@ _ws_loop:
 	ret
 
 [section .bss vstart=512]
-command_buffer: resb 64
+command_buffer: resb 32
+emulated_drive_lba_sector_count: resw 2
+emulated_drive_cylinder_count: resw 1
+emulated_drive_sector_count: resb 1
+emulated_drive_head_count: resb 1

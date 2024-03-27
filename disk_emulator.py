@@ -1,7 +1,6 @@
 from argparse import ArgumentParser
 import os
 import struct
-import sys
 
 import serial
 
@@ -9,12 +8,16 @@ import serial
 EMULATOR_READ_COMMAND_OPCODE = 0x01
 EMULATOR_READ_RESPONSE_OPCODE = 0x81
 
+EMULATOR_GEOMETRY_COMMAND_OPCODE = 0x02
+EMULATOR_GEOMETRY_RESPONSE_OPCODE = 0x82
+
 
 HDI_HEADER_FORMAT = "<8L"
 
 READ_COMMAND_FORMAT = "<BBHHBB"
 
 SERIAL_PORT_SPEED = 19200
+
 
 class HDIHeader:
     """
@@ -28,6 +31,7 @@ class HDIHeader:
         self.sectors = sectors
         self.heads = heads
         self.cylinders = cylinders
+        self.total_sectors = data_size // bytes_per_sector
 
     @classmethod
     def from_bytes(cls, raw_bytes) -> "HDIHeader":
@@ -80,8 +84,19 @@ def handle_read_command(command_buffer, disk_data, image_header, serial_port):
     print("sent data")
 
 
-def handle_sense_command(command_buffer, image_header, serial_port):
-    print(f"- Got SENSE command, AH={command_buffer[2]:02x}, AL={command_buffer[1]:02x}")
+def handle_geometry_command(command_buffer, image_header, serial_port):
+    print(f"- Got GEOMETRY command, AL={command_buffer[1]:02x}")
+    response = struct.pack(
+        "<BBLHBB",
+        EMULATOR_GEOMETRY_RESPONSE_OPCODE,
+        0x00,   # Status=OK
+        image_header.total_sectors,
+        image_header.cylinders,
+        image_header.heads,
+        image_header.sectors
+    )
+
+    serial_port.write(response)
 
 
 def handle_other_command(command_buffer, image_header, serial_port):
@@ -106,8 +121,8 @@ def run_server_loop(disk_data, image_header, serial_port):
             handle_read_command(command_buffer, disk_data, image_header, serial_port)
             command_buffer.clear()
 
-        if len(command_buffer) == 3 and command_buffer[0] == 0x02:
-            handle_sense_command(command_buffer, image_header, serial_port)
+        if len(command_buffer) == 2 and command_buffer[0] == 0x02:
+            handle_geometry_command(command_buffer, image_header, serial_port)
             command_buffer.clear()
 
         if len(command_buffer) == 3 and command_buffer[0] == 0x03:
